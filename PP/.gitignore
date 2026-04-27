@@ -1,0 +1,22 @@
+# Large data files
+data/*.nc
+data/solar_cf_grid.csv
+data/wind_cf_grid.csv
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
