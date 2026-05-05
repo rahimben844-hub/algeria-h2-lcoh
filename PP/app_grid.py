@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import math
 
 warnings.filterwarnings("ignore")
 
@@ -295,8 +296,7 @@ m4.metric("🔢 Grid Cells", f"{len(valid)}")
 m5.metric("♻️ Max Renew.", f"{valid['pct_renewable'].max():.0f}%")
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["🗺️ LCOH MAP", "☀️ SOLAR RESOURCE", "📊 STATISTICS"])
-
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["LCOH MAP", "SOLAR RESOURCE", "STATISTICS", "⚡ SITE SUITABILITY", "🗺️ INFRASTRUCTURE"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GRID MAP BUILDER
@@ -305,18 +305,9 @@ tab1, tab2, tab3 = st.tabs(["🗺️ LCOH MAP", "☀️ SOLAR RESOURCE", "📊 S
 def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
                   cs: str, title: str, opacity: float = 0.55,
                   height: int = 640) -> go.Figure:
-    """
-    Two-layer seamless grid map:
 
-      Layer 1 — ALL cells in bounding box, transparent with just a border line.
-                 Shows the Algeria map underneath (terrain, borders, city names).
-
-      Layer 2 — Only cells WITH data, semi-transparent colored fill.
-                 The map is still visible through the cells.
-    """
     resolution = detect_resolution(df_data)
 
-    # Complete bounding box grid (for layer 1 outlines)
     full_grid = make_complete_grid(df_data, resolution)
     geo_bg = build_geojson(
         tuple(full_grid["lat"].round(4)),
@@ -325,7 +316,6 @@ def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
         resolution,
     )
 
-    # Only cells with real values (for layer 2 colored fill)
     df_plot = df_data[df_data[col_name].notna()].copy()
     df_plot["cell_id"] = df_plot["cell_id"].astype(str)
     geo_data = build_geojson(
@@ -348,21 +338,19 @@ def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
 
     fig = go.Figure()
 
-    # ── Layer 1: transparent grid outline (shows map underneath) ─────────────
     fig.add_trace(go.Choroplethmapbox(
         geojson=geo_bg,
         locations=full_grid["cell_id"],
         z=[0] * len(full_grid),
-        colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],  # fully transparent fill
+        colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
         showscale=False,
-        marker_opacity=1.0,           # opacity applies to fill; fill is transparent anyway
-        marker_line_width=0.8,        # visible grid border lines
-        marker_line_color="#2a4060",  # subtle blue-grey border — draws the grid
+        marker_opacity=1.0,
+        marker_line_width=0.8,
+        marker_line_color="#2a4060",
         hoverinfo="skip",
         name="",
     ))
 
-    # ── Layer 2: semi-transparent colored data cells ──────────────────────────
     fig.add_trace(go.Choroplethmapbox(
         geojson=geo_data,
         locations=df_plot["cell_id"],
@@ -370,7 +358,7 @@ def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
         colorscale=cs,
         zmin=float(df_plot[col_name].min()),
         zmax=float(df_plot[col_name].max()),
-        marker_opacity=opacity,       # user-controlled — map visible through cells
+        marker_opacity=opacity,
         marker_line_width=0.8,
         marker_line_color="#2a4060",
         colorbar=dict(
@@ -385,11 +373,7 @@ def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
 
     fig.update_layout(
         **PLOT_BG,
-        mapbox=dict(
-            style="carto-darkmatter",
-            center=dict(lat=28.0, lon=2.5),
-            zoom=4.2,
-        ),
+        mapbox=dict(style="carto-darkmatter", center=dict(lat=28.0, lon=2.5), zoom=4.2),
         height=height,
         showlegend=False,
         title=dict(
@@ -399,8 +383,6 @@ def make_grid_map(df_data: pd.DataFrame, col_name: str, col_label: str,
         ),
     )
     return fig
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  TAB 1 — LCOH MAP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -513,3 +495,1173 @@ with tab3:
               "electrolyzer_capacity_kw":"Elec. kW"}
     tbl = valid[display_cols].rename(columns=rename).sort_values("LCOH USD/kg")
     st.dataframe(tbl.round(3), use_container_width=True, hide_index=True)
+# ============================================================
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 4 — ELECTROLYZER SITE SUITABILITY
+# ══════════════════════════════════════════════════════════════════════════════
+import math
+
+SOLAR_STATIONS = [
+    {"name": "Adrar Solar Plant",      "lat": 27.9077, "lon": -0.3174, "mw": 233,  "type": "Solar"},
+    {"name": "In Salah Solar",         "lat": 27.1830, "lon":  2.5040, "mw": 99,   "type": "Solar"},
+    {"name": "Tindouf Solar",          "lat": 27.7520, "lon": -8.1540, "mw": 9,    "type": "Solar"},
+    {"name": "Timimoune Solar",        "lat": 29.2639, "lon":  0.2306, "mw": 9,    "type": "Solar"},
+    {"name": "Zaouiet Kounta Solar",   "lat": 27.9500, "lon": -0.1833, "mw": 6,    "type": "Solar"},
+    {"name": "Reggane Solar",          "lat": 26.7167, "lon":  0.1667, "mw": 5,    "type": "Solar"},
+    {"name": "Aoulef Solar",           "lat": 26.9667, "lon":  1.0833, "mw": 5,    "type": "Solar"},
+    {"name": "Tsabit Solar",           "lat": 28.3833, "lon": -0.0667, "mw": 3,    "type": "Solar"},
+    {"name": "Oued El Kebrit Solar",   "lat": 35.9194, "lon":  7.8711, "mw": 50,   "type": "Solar"},
+    {"name": "Hassi R'Mel ISCC",       "lat": 33.1247, "lon":  3.3519, "mw": 150,  "type": "Solar"},
+    {"name": "Saida Solar PV Park",    "lat": 34.8300, "lon":  0.1500, "mw": 29,   "type": "Solar"},
+    {"name": "Ghardaia Solar",         "lat": 32.4833, "lon":  3.6667, "mw": 1,    "type": "Solar"},
+]
+
+WIND_STATIONS = [
+    {"name": "Kabertene Wind Farm",    "lat": 28.4624, "lon": -0.0576, "mw": 10.2, "type": "Wind"},
+    {"name": "Adrar Wind Farm",        "lat": 27.8700, "lon": -0.2900, "mw": 10,   "type": "Wind"},
+]
+
+ALL_STATIONS = SOLAR_STATIONS + WIND_STATIONS
+
+CITIES = [
+    {"name": "Algiers",        "lat": 36.7372, "lon":  3.0865},
+    {"name": "Oran",           "lat": 35.6969, "lon": -0.6331},
+    {"name": "Constantine",    "lat": 36.3650, "lon":  6.6147},
+    {"name": "Annaba",         "lat": 36.9000, "lon":  7.7667},
+    {"name": "Setif",          "lat": 36.1898, "lon":  5.4108},
+    {"name": "Batna",          "lat": 35.5500, "lon":  6.1667},
+    {"name": "Skikda",         "lat": 36.8761, "lon":  6.9069},
+    {"name": "Ghardaia",       "lat": 32.4833, "lon":  3.6667},
+    {"name": "Ouargla",        "lat": 31.9500, "lon":  5.3167},
+    {"name": "Hassi Messaoud", "lat": 31.7000, "lon":  6.0500},
+    {"name": "Tlemcen",        "lat": 34.8800, "lon": -1.3200},
+    {"name": "Bechar",         "lat": 31.6167, "lon": -2.2167},
+    {"name": "Tamanrasset",    "lat": 22.7850, "lon":  5.5228},
+    {"name": "Adrar",          "lat": 27.8741, "lon": -0.2914},
+    {"name": "In Salah",       "lat": 27.1956, "lon":  2.4703},
+]
+
+GRID_LINES = [
+    [{"lat": 36.74, "lon": 3.09}, {"lat": 35.20, "lon": 3.40},
+     {"lat": 33.80, "lon": 3.55}, {"lat": 32.48, "lon": 3.67}, {"lat": 31.95, "lon": 5.32}],
+    [{"lat": 36.74, "lon": 3.09}, {"lat": 36.50, "lon": 4.50},
+     {"lat": 36.37, "lon": 6.61}, {"lat": 36.90, "lon": 7.77}],
+    [{"lat": 36.74, "lon": 3.09}, {"lat": 36.20, "lon": 1.80}, {"lat": 35.70, "lon": -0.63}],
+    [{"lat": 35.70, "lon": -0.63}, {"lat": 34.10, "lon": -1.50}, {"lat": 31.62, "lon": -2.22}],
+    [{"lat": 36.19, "lon": 5.41}, {"lat": 36.37, "lon": 6.61}],
+    [{"lat": 31.70, "lon": 6.05}, {"lat": 31.95, "lon": 5.32}],
+    [{"lat": 36.74, "lon": 3.09}, {"lat": 35.55, "lon": 6.17}, {"lat": 35.50, "lon": 6.17}],
+    [{"lat": 33.12, "lon": 3.35}, {"lat": 32.48, "lon": 3.67}],
+]
+
+
+def _hav(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _min_to_lines(lat, lon, lines):
+    best = float("inf")
+    for line in lines:
+        for pt in line:
+            best = min(best, _hav(lat, lon, pt["lat"], pt["lon"]))
+    return best
+
+
+def _min_to_pts(lat, lon, pts):
+    if not pts:
+        return 9999.0
+    return min(_hav(lat, lon, p["lat"], p["lon"]) for p in pts)
+
+
+with tab4:
+    st.markdown("## ⚡ Electrolyzer Site Suitability")
+    st.markdown(
+        '<p style="color:#5a7a9a;font-size:13px;margin-top:-10px">'
+        "Composite scoring: LCOH · Grid proximity · Renewable stations · H₂ demand centres"
+        "</p>", unsafe_allow_html=True
+    )
+
+    if not has_data:
+        st.warning("No LCOH grid found. Run atlite_grid.py then pypsa_grid.py first.")
+        st.stop()
+
+    st.sidebar.markdown('<div class="section-title">Site Scoring Weights</div>', unsafe_allow_html=True)
+    w_lcoh  = st.sidebar.slider("↓ LCOH (lower=better)",    0, 10, 4, key="s_lcoh")
+    w_grid  = st.sidebar.slider("↓ Grid line distance",     0, 10, 3, key="s_grid")
+    w_renew = st.sidebar.slider("↓ RE station distance",    0, 10, 2, key="s_renew")
+    w_city  = st.sidebar.slider("↓ City/demand distance",   0, 10, 1, key="s_city")
+    top_n   = st.sidebar.slider("Top N sites",              3, 20, 8, key="s_topn")
+    show_gridlines = st.sidebar.checkbox("Show grid lines",  value=True, key="cb_gl")
+    show_stations  = st.sidebar.checkbox("Show RE stations", value=True, key="cb_st")
+    show_cities    = st.sidebar.checkbox("Show cities",      value=True, key="cb_ct")
+
+    df_s = scaled_df[scaled_df["lcoh_scaled"].notna() & (scaled_df["lcoh_scaled"] < 50)].copy()
+
+    df_s["dist_grid_km"]  = df_s.apply(lambda r: _min_to_lines(r["lat"], r["lon"], GRID_LINES), axis=1)
+    df_s["dist_renew_km"] = df_s.apply(lambda r: _min_to_pts(r["lat"], r["lon"], ALL_STATIONS), axis=1)
+    df_s["dist_city_km"]  = df_s.apply(lambda r: _min_to_pts(r["lat"], r["lon"], CITIES), axis=1)
+
+    def _norm(s):
+        rng = s.max() - s.min()
+        return (s - s.min()) / rng if rng > 0 else s * 0
+
+    df_s["n_lcoh"]  = _norm(df_s["lcoh_scaled"])
+    df_s["n_grid"]  = _norm(df_s["dist_grid_km"])
+    df_s["n_renew"] = _norm(df_s["dist_renew_km"])
+    df_s["n_city"]  = _norm(df_s["dist_city_km"])
+
+    tw = max(w_lcoh + w_grid + w_renew + w_city, 1)
+    df_s["score"] = (
+        w_lcoh  * (1 - df_s["n_lcoh"])  +
+        w_grid  * (1 - df_s["n_grid"])  +
+        w_renew * (1 - df_s["n_renew"]) +
+        w_city  * (1 - df_s["n_city"])
+    ) / tw * 100
+
+    df_s = df_s.sort_values("score", ascending=False)
+    top_sites = df_s.head(top_n)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Best LCOH",     f"{top_sites.iloc[0]['lcoh_scaled']:.2f} $/kg")
+    k2.metric("Best Score",    f"{top_sites.iloc[0]['score']:.1f}/100")
+    k3.metric("Avg Grid Dist", f"{top_sites['dist_grid_km'].mean():.0f} km")
+    k4.metric("Avg City Dist", f"{top_sites['dist_city_km'].mean():.0f} km")
+    st.markdown("---")
+
+    fig4 = go.Figure()
+    resolution = detect_resolution(df_s)
+
+    geo_bg = build_geojson(
+        tuple(df_s["lat"].round(4)),
+        tuple(df_s["lon"].round(4)),
+        tuple(df_s["cell_id"]),
+        resolution,
+    )
+
+    fig4.add_trace(go.Choroplethmapbox(
+        geojson=geo_bg,
+        locations=df_s["cell_id"].tolist(),
+        z=df_s["lcoh_scaled"].tolist(),
+        colorscale="RdYlGn_r",
+        marker=dict(  # ← opacity must go inside marker=dict()
+            opacity=0.30,
+            line_width=0.5,
+            line_color="#1e3050",
+        ))),
+
+    if show_gridlines:
+        for line in GRID_LINES:
+            fig4.add_trace(go.Scattermapbox(
+                lat=[p["lat"] for p in line], lon=[p["lon"] for p in line],
+                mode="lines", line=dict(width=2, color="#00d4b8"),
+                hoverinfo="skip", showlegend=False,
+            ))
+        fig4.add_trace(go.Scattermapbox(
+            lat=[None], lon=[None], mode="lines",
+            line=dict(width=2, color="#00d4b8"), name="Grid 220kV+",
+        ))
+
+    if show_stations:
+        for s in ALL_STATIONS:
+            col_dot = "#ffe066" if s["type"] == "Solar" else "#7ecfff"
+            sym     = "circle"  if s["type"] == "Solar" else "square"
+            fig4.add_trace(go.Scattermapbox(
+                lat=[s["lat"]], lon=[s["lon"]], mode="markers",
+                marker=dict(size=10, color=col_dot, symbol=sym),
+                text=f"<b>{s['name']}</b><br>{s['mw']} MW {s['type']}",
+                hoverinfo="text", showlegend=False,
+            ))
+        fig4.add_trace(go.Scattermapbox(lat=[None], lon=[None], mode="markers",
+            marker=dict(size=10, color="#ffe066"), name="Solar Station"))
+        fig4.add_trace(go.Scattermapbox(lat=[None], lon=[None], mode="markers",
+            marker=dict(size=10, color="#7ecfff", symbol="square"), name="Wind Station"))
+
+    if show_cities:
+        fig4.add_trace(go.Scattermapbox(
+            lat=[c["lat"] for c in CITIES], lon=[c["lon"] for c in CITIES],
+            mode="markers+text",
+            marker=dict(size=6, color="#ff4d6d"),
+            text=[c["name"] for c in CITIES],
+            textposition="top right",
+            textfont=dict(size=9, color="#c8d8f0"),
+            hoverinfo="text", name="City / Industry",
+        ))
+
+    fig4.add_trace(go.Scattermapbox(
+        lat=top_sites["lat"].tolist(),
+        lon=top_sites["lon"].tolist(),
+        mode="markers",
+        marker=dict(size=18, color="#f5a623", symbol="star"),
+        text=[
+            f"<b>Rank #{i+1}</b><br>"
+            f"Score: {row['score']:.1f}/100<br>"
+            f"LCOH: {row['lcoh_scaled']:.2f} $/kg<br>"
+            f"Grid: {row['dist_grid_km']:.0f} km<br>"
+            f"Station: {row['dist_renew_km']:.0f} km<br>"
+            f"City: {row['dist_city_km']:.0f} km<br>"
+            f"Solar FLH: {row.get('solar_full_load_hours', 0):.0f} h/yr<br>"
+            f"Renew: {row.get('pct_renewable', 0):.0f}%"
+            for i, (_, row) in enumerate(top_sites.iterrows())
+        ],
+        hoverinfo="text",
+        name=f"Top {top_n} Electrolyzer Sites",
+    ))
+
+    fig4.update_layout(
+        **PLOT_BG,
+        mapbox=dict(style="carto-darkmatter", center=dict(lat=28.0, lon=2.5), zoom=4.2),
+        height=680, showlegend=True,
+        legend=dict(bgcolor="#0d1829", bordercolor="#1e3050", borderwidth=1,
+                    font=dict(color="#c8d8f0", size=11), x=0.75, y=0.98),
+        title=dict(text="Electrolyzer Site Suitability — Algeria",
+                   font=dict(color="#f5a623", size=14, family="Space Mono"), x=0.01),
+    )
+    st.plotly_chart(fig4, use_container_width=True)
+
+    st.markdown("### 🏆 Top Candidate Sites")
+    tbl_cols = ["lat", "lon", "score", "lcoh_scaled", "dist_grid_km",
+                "dist_renew_km", "dist_city_km", "solar_full_load_hours", "pct_renewable"]
+    tbl_cols = [c for c in tbl_cols if c in top_sites.columns]
+    tbl = top_sites[tbl_cols].copy().reset_index(drop=True)
+    tbl.index += 1
+    tbl.columns = [
+        {"lat": "Lat", "lon": "Lon", "score": "Score /100", "lcoh_scaled": "LCOH $/kg",
+         "dist_grid_km": "Grid dist km", "dist_renew_km": "Station dist km",
+         "dist_city_km": "City dist km", "solar_full_load_hours": "Solar FLH h/yr",
+         "pct_renewable": "Renew %"}.get(c, c)
+        for c in tbl_cols
+    ]
+    st.dataframe(tbl.round(2), use_container_width=True)
+
+    st.markdown("### Score Breakdown — Top 10")
+    top10 = df_s.head(10).reset_index(drop=True)
+    labels = [f"#{i+1} ({row['lat']:.0f}N,{row['lon']:.0f}E)"
+              for i, (_, row) in enumerate(top10.iterrows())]
+    fig_bar = go.Figure()
+    for cname, vals, bar_col in [
+        ("LCOH",    w_lcoh  * (1 - _norm(top10["lcoh_scaled"]))   / tw * 100, "#f5a623"),
+        ("Grid",    w_grid  * (1 - _norm(top10["dist_grid_km"]))  / tw * 100, "#00d4b8"),
+        ("Station", w_renew * (1 - _norm(top10["dist_renew_km"])) / tw * 100, "#ffe066"),
+        ("City",    w_city  * (1 - _norm(top10["dist_city_km"]))  / tw * 100, "#7ecfff"),
+    ]:
+        fig_bar.add_trace(go.Bar(
+            name=cname, x=labels, y=vals.tolist(),
+            marker_color=bar_col,
+            hovertemplate=f"{cname}: %{{y:.1f}}<extra></extra>",
+        ))
+    fig_bar.update_layout(
+        **PLOT_BG, barmode="stack", height=320,
+        xaxis=dict(title="Rank", tickfont=dict(size=9, color="#c8d8f0"), gridcolor="#1e3050"),
+        yaxis=dict(title="Score contribution", gridcolor="#1e3050"),
+        legend=dict(bgcolor="#0d1829", font=dict(color="#c8d8f0", size=11)),
+        title=dict(text="Score Breakdown by Criterion",
+                   font=dict(color="#f5a623", size=13, family="Space Mono"), x=0.01),
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.download_button(
+        "📥 Download Site Rankings CSV",
+        data=df_s[["lat", "lon", "score", "lcoh_scaled",
+                   "dist_grid_km", "dist_renew_km", "dist_city_km"]].to_csv(index=False),
+        file_name="algeria_electrolyzer_sites.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+import json
+
+
+# ── Real-data loaders (with hardcoded fallbacks) ──────────────────────────────
+
+@st.cache_data
+def load_power_lines():
+    """
+    Load HV power lines from Overpass GeoJSON export.
+    Expected format: GeoJSON FeatureCollection of LineString features.
+    Falls back to the hardcoded GRID_LINES from tab4 if file missing.
+    """
+    path = DATA_DIR / "grid_lines.geojson"
+    if not path.exists():
+        # fallback: convert existing GRID_LINES to same format
+        return [
+            {"coords": [(p["lon"], p["lat"]) for p in line], "voltage": "220kV", "source": "estimated"}
+            for line in GRID_LINES
+        ]
+    with open(path) as f:
+        gj = json.load(f)
+    lines = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        lines.append({
+            "coords": coords,
+            "voltage": props.get("voltage", "unknown"),
+            "name": props.get("name", ""),
+            "source": "osm",
+        })
+    return lines
+
+
+@st.cache_data
+def load_gas_pipelines():
+    """
+    Load gas pipelines from Global Energy Monitor GeoJSON.
+    Falls back to empty list if file missing.
+    """
+    path = DATA_DIR / "gas_pipelines.geojson"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        gj = json.load(f)
+    pipes = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        pipes.append({
+            "coords": coords,
+            "name": props.get("Pipeline Name", props.get("name", "")),
+            "status": props.get("Status", ""),
+            "source": "gem",
+        })
+    return pipes
+
+
+@st.cache_data
+def load_ports():
+    """
+    Load ports from World Port Index CSV.
+    Filter: COUNTRY == 'AL' or 'DZ' depending on WPI version.
+    Falls back to hardcoded major ports if file missing.
+    """
+    path = DATA_DIR / "ports.csv"
+    if not path.exists():
+        return [
+            {"name": "Arzew", "lat": 35.734, "lon": -0.311, "type": "LNG/Export"},
+            {"name": "Skikda", "lat": 36.876, "lon": 6.907, "type": "LNG/Export"},
+            {"name": "Algiers", "lat": 36.774, "lon": 3.056, "type": "General"},
+            {"name": "Annaba", "lat": 36.906, "lon": 7.750, "type": "General"},
+            {"name": "Bejaia", "lat": 36.752, "lon": 5.090, "type": "General"},
+            {"name": "Mostaganem", "lat": 35.931, "lon": 0.085, "type": "General"},
+            {"name": "Oran", "lat": 35.718, "lon": -0.644, "type": "General"},
+        ]
+    df_p = pd.read_csv(path)
+    # WPI column names vary by version — handle both
+    lat_col = next((c for c in df_p.columns if "lat" in c.lower()), None)
+    lon_col = next((c for c in df_p.columns if "lon" in c.lower()), None)
+    name_col = next((c for c in df_p.columns if "name" in c.lower() or "port" in c.lower()), None)
+    if not (lat_col and lon_col and name_col):
+        return []
+    ports = []
+    for _, row in df_p.iterrows():
+        try:
+            ports.append({
+                "name": str(row[name_col]),
+                "lat": float(row[lat_col]),
+                "lon": float(row[lon_col]),
+                "type": str(row.get("Harbor Type", row.get("type", "Port"))),
+            })
+        except (ValueError, KeyError):
+            continue
+    return ports
+
+
+@st.cache_data
+def load_power_plants():
+    """
+    Load solar + wind plants from Global Energy Monitor CSV.
+    Falls back to the hardcoded ALL_STATIONS from tab4.
+    """
+    path = DATA_DIR / "power_plants.csv"
+    if not path.exists():
+        return ALL_STATIONS  # reuse tab4 fallback
+    df_pp = pd.read_csv(path)
+    plants = []
+    for _, row in df_pp.iterrows():
+        try:
+            lat = float(row.get("Latitude", row.get("lat", float("nan"))))
+            lon = float(row.get("Longitude", row.get("lon", float("nan"))))
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            fuel = str(row.get("Fuel", row.get("type", "Solar"))).lower()
+            ptype = "Wind" if "wind" in fuel else "Solar"
+            plants.append({
+                "name": str(row.get("Project Name", row.get("name", "Plant"))),
+                "lat": lat,
+                "lon": lon,
+                "mw": float(row.get("Capacity (MW)", row.get("mw", 0)) or 0),
+                "status": str(row.get("Status", "operating")),
+                "type": ptype,
+            })
+        except (ValueError, KeyError):
+            continue
+    return plants
+
+
+# ── Tab rendering ─────────────────────────────────────────────────────────────
+import json
+
+
+# ── Real-data loaders (with hardcoded fallbacks) ──────────────────────────────
+
+@st.cache_data
+def load_power_lines():
+    """
+    Load HV power lines from Overpass GeoJSON export.
+    Expected format: GeoJSON FeatureCollection of LineString features.
+    Falls back to the hardcoded GRID_LINES from tab4 if file missing.
+    """
+    path = DATA_DIR / "grid_lines.geojson"
+    if not path.exists():
+        # fallback: convert existing GRID_LINES to same format
+        return [
+            {"coords": [(p["lon"], p["lat"]) for p in line], "voltage": "220kV", "source": "estimated"}
+            for line in GRID_LINES
+        ]
+    with open(path) as f:
+        gj = json.load(f)
+    lines = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        lines.append({
+            "coords": coords,
+            "voltage": props.get("voltage", "unknown"),
+            "name": props.get("name", ""),
+            "source": "osm",
+        })
+    return lines
+
+
+@st.cache_data
+def load_gas_pipelines():
+    """
+    Load gas pipelines from Global Energy Monitor GeoJSON.
+    Falls back to empty list if file missing.
+    """
+    path = DATA_DIR / "gas_pipelines.geojson"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        gj = json.load(f)
+    pipes = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        pipes.append({
+            "coords": coords,
+            "name": props.get("Pipeline Name", props.get("name", "")),
+            "status": props.get("Status", ""),
+            "source": "gem",
+        })
+    return pipes
+
+
+@st.cache_data
+def load_ports():
+    """
+    Load ports from World Port Index CSV.
+    Filter: COUNTRY == 'AL' or 'DZ' depending on WPI version.
+    Falls back to hardcoded major ports if file missing.
+    """
+    path = DATA_DIR / "ports.csv"
+    if not path.exists():
+        return [
+            {"name": "Arzew", "lat": 35.734, "lon": -0.311, "type": "LNG/Export"},
+            {"name": "Skikda", "lat": 36.876, "lon": 6.907, "type": "LNG/Export"},
+            {"name": "Algiers", "lat": 36.774, "lon": 3.056, "type": "General"},
+            {"name": "Annaba", "lat": 36.906, "lon": 7.750, "type": "General"},
+            {"name": "Bejaia", "lat": 36.752, "lon": 5.090, "type": "General"},
+            {"name": "Mostaganem", "lat": 35.931, "lon": 0.085, "type": "General"},
+            {"name": "Oran", "lat": 35.718, "lon": -0.644, "type": "General"},
+        ]
+    df_p = pd.read_csv(path)
+    # WPI column names vary by version — handle both
+    lat_col = next((c for c in df_p.columns if "lat" in c.lower()), None)
+    lon_col = next((c for c in df_p.columns if "lon" in c.lower()), None)
+    name_col = next((c for c in df_p.columns if "name" in c.lower() or "port" in c.lower()), None)
+    if not (lat_col and lon_col and name_col):
+        return []
+    ports = []
+    for _, row in df_p.iterrows():
+        try:
+            ports.append({
+                "name": str(row[name_col]),
+                "lat": float(row[lat_col]),
+                "lon": float(row[lon_col]),
+                "type": str(row.get("Harbor Type", row.get("type", "Port"))),
+            })
+        except (ValueError, KeyError):
+            continue
+    return ports
+
+
+@st.cache_data
+def load_power_plants():
+    """
+    Load solar + wind plants from Global Energy Monitor CSV.
+    Falls back to the hardcoded ALL_STATIONS from tab4.
+    """
+    path = DATA_DIR / "power_plants.csv"
+    if not path.exists():
+        return ALL_STATIONS  # reuse tab4 fallback
+    df_pp = pd.read_csv(path)
+    plants = []
+    for _, row in df_pp.iterrows():
+        try:
+            lat = float(row.get("Latitude", row.get("lat", float("nan"))))
+            lon = float(row.get("Longitude", row.get("lon", float("nan"))))
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            fuel = str(row.get("Fuel", row.get("type", "Solar"))).lower()
+            ptype = "Wind" if "wind" in fuel else "Solar"
+            plants.append({
+                "name": str(row.get("Project Name", row.get("name", "Plant"))),
+                "lat": lat,
+                "lon": lon,
+                "mw": float(row.get("Capacity (MW)", row.get("mw", 0)) or 0),
+                "status": str(row.get("Status", "operating")),
+                "type": ptype,
+            })
+        except (ValueError, KeyError):
+            continue
+    return plants
+
+
+# ── Tab rendering ─────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 5 — ALGERIA INFRASTRUCTURE MAP
+#  Paste this block into app_grid.py
+#
+#  STEP 1: change your tab line from:
+#    tab1, tab2, tab3, tab4 = st.tabs([...])
+#  to:
+#    tab1, tab2, tab3, tab4, tab5 = st.tabs([..., "🗺️ INFRASTRUCTURE"])
+#
+#  STEP 2: paste this entire block at the bottom of app_grid.py
+#
+#  STEP 3: put your downloaded data files in data/ :
+#    data/grid_lines.geojson     ← from Overpass (power lines)
+#    data/gas_pipelines.geojson  ← from Global Energy Monitor
+#    data/ports.csv              ← from World Port Index (filter COUNTRY="AL")
+#    data/power_plants.csv       ← from Global Energy Monitor solar+wind tracker
+#
+#  All loaders gracefully fall back to your existing hardcoded data
+#  if the files are not yet present — so the tab works immediately.
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json
+
+# ── Real-data loaders (with hardcoded fallbacks) ──────────────────────────────
+
+@st.cache_data
+def load_power_lines():
+    """
+    Load HV power lines from Overpass GeoJSON export.
+    Expected format: GeoJSON FeatureCollection of LineString features.
+    Falls back to the hardcoded GRID_LINES from tab4 if file missing.
+    """
+    path = DATA_DIR / "grid_lines.geojson"
+    if not path.exists():
+        # fallback: convert existing GRID_LINES to same format
+        return [
+            {"coords": [(p["lon"], p["lat"]) for p in line], "voltage": "220kV", "source": "estimated"}
+            for line in GRID_LINES
+        ]
+    with open(path) as f:
+        gj = json.load(f)
+    lines = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        lines.append({
+            "coords":  coords,
+            "voltage": props.get("voltage", "unknown"),
+            "name":    props.get("name", ""),
+            "source":  "osm",
+        })
+    return lines
+
+
+@st.cache_data
+def load_gas_pipelines():
+    """
+    Load gas pipelines from Global Energy Monitor GeoJSON.
+    Falls back to empty list if file missing.
+    """
+    path = DATA_DIR / "gas_pipelines.geojson"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        gj = json.load(f)
+    pipes = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        pipes.append({
+            "coords": coords,
+            "name":   props.get("Pipeline Name", props.get("name", "")),
+            "status": props.get("Status", ""),
+            "source": "gem",
+        })
+    return pipes
+
+
+@st.cache_data
+def load_ports():
+    """
+    Load ports from World Port Index CSV.
+    Filter: COUNTRY == 'AL' or 'DZ' depending on WPI version.
+    Falls back to hardcoded major ports if file missing.
+    """
+    path = DATA_DIR / "ports.csv"
+    if not path.exists():
+        return [
+            {"name": "Arzew",       "lat": 35.734, "lon": -0.311, "type": "LNG/Export"},
+            {"name": "Skikda",      "lat": 36.876, "lon":  6.907, "type": "LNG/Export"},
+            {"name": "Algiers",     "lat": 36.774, "lon":  3.056, "type": "General"},
+            {"name": "Annaba",      "lat": 36.906, "lon":  7.750, "type": "General"},
+            {"name": "Bejaia",      "lat": 36.752, "lon":  5.090, "type": "General"},
+            {"name": "Mostaganem",  "lat": 35.931, "lon":  0.085, "type": "General"},
+            {"name": "Oran",        "lat": 35.718, "lon": -0.644, "type": "General"},
+        ]
+    df_p = pd.read_csv(path)
+    # WPI column names vary by version — handle both
+    lat_col = next((c for c in df_p.columns if "lat" in c.lower()), None)
+    lon_col = next((c for c in df_p.columns if "lon" in c.lower()), None)
+    name_col = next((c for c in df_p.columns if "name" in c.lower() or "port" in c.lower()), None)
+    if not (lat_col and lon_col and name_col):
+        return []
+    ports = []
+    for _, row in df_p.iterrows():
+        try:
+            ports.append({
+                "name": str(row[name_col]),
+                "lat":  float(row[lat_col]),
+                "lon":  float(row[lon_col]),
+                "type": str(row.get("Harbor Type", row.get("type", "Port"))),
+            })
+        except (ValueError, KeyError):
+            continue
+    return ports
+
+
+@st.cache_data
+def load_power_plants():
+    """
+    Load solar + wind plants from Global Energy Monitor CSV.
+    Falls back to the hardcoded ALL_STATIONS from tab4.
+    """
+    path = DATA_DIR / "power_plants.csv"
+    if not path.exists():
+        return ALL_STATIONS  # reuse tab4 fallback
+    df_pp = pd.read_csv(path)
+    plants = []
+    for _, row in df_pp.iterrows():
+        try:
+            lat = float(row.get("Latitude", row.get("lat", float("nan"))))
+            lon = float(row.get("Longitude", row.get("lon", float("nan"))))
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            fuel = str(row.get("Fuel", row.get("type", "Solar"))).lower()
+            ptype = "Wind" if "wind" in fuel else "Solar"
+            plants.append({
+                "name":   str(row.get("Project Name", row.get("name", "Plant"))),
+                "lat":    lat,
+                "lon":    lon,
+                "mw":     float(row.get("Capacity (MW)", row.get("mw", 0)) or 0),
+                "status": str(row.get("Status", "operating")),
+                "type":   ptype,
+            })
+        except (ValueError, KeyError):
+            continue
+    return plants
+
+
+# ── Tab rendering ─────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 5 — ALGERIA INFRASTRUCTURE MAP
+#  Paste this block into app_grid.py
+#
+#  STEP 1: change your tab line from:
+#    tab1, tab2, tab3, tab4 = st.tabs([...])
+#  to:
+#    tab1, tab2, tab3, tab4, tab5 = st.tabs([..., "🗺️ INFRASTRUCTURE"])
+#
+#  STEP 2: paste this entire block at the bottom of app_grid.py
+#
+#  STEP 3: put your downloaded data files in data/ :
+#    data/grid_lines.geojson     ← from Overpass (power lines)
+#    data/gas_pipelines.geojson  ← from Global Energy Monitor
+#    data/ports.csv              ← from World Port Index (filter COUNTRY="AL")
+#    data/power_plants.csv       ← from Global Energy Monitor solar+wind tracker
+#
+#  All loaders gracefully fall back to your existing hardcoded data
+#  if the files are not yet present — so the tab works immediately.
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json
+
+# ── Real-data loaders (with hardcoded fallbacks) ──────────────────────────────
+
+@st.cache_data
+def load_power_lines():
+    """
+    Load HV power lines from Overpass GeoJSON export.
+    Expected format: GeoJSON FeatureCollection of LineString features.
+    Falls back to the hardcoded GRID_LINES from tab4 if file missing.
+    """
+    path = DATA_DIR / "grid_lines.geojson"
+    if not path.exists():
+        # fallback: convert existing GRID_LINES to same format
+        return [
+            {"coords": [(p["lon"], p["lat"]) for p in line], "voltage": "220kV", "source": "estimated"}
+            for line in GRID_LINES
+        ]
+    with open(path) as f:
+        gj = json.load(f)
+    lines = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        lines.append({
+            "coords":  coords,
+            "voltage": props.get("voltage", "unknown"),
+            "name":    props.get("name", ""),
+            "source":  "osm",
+        })
+    return lines
+
+
+@st.cache_data
+def load_gas_pipelines():
+    """
+    Load gas pipelines from Global Energy Monitor GeoJSON.
+    Falls back to empty list if file missing.
+    """
+    path = DATA_DIR / "gas_pipelines.geojson"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        gj = json.load(f)
+    pipes = []
+    for feat in gj["features"]:
+        geom = feat["geometry"]
+        props = feat.get("properties", {})
+        if geom["type"] == "LineString":
+            coords = geom["coordinates"]
+        elif geom["type"] == "MultiLineString":
+            coords = [pt for seg in geom["coordinates"] for pt in seg]
+        else:
+            continue
+        pipes.append({
+            "coords": coords,
+            "name":   props.get("Pipeline Name", props.get("name", "")),
+            "status": props.get("Status", ""),
+            "source": "gem",
+        })
+    return pipes
+
+
+@st.cache_data
+def load_ports():
+    """
+    Load ports from World Port Index CSV.
+    Filter: COUNTRY == 'AL' or 'DZ' depending on WPI version.
+    Falls back to hardcoded major ports if file missing.
+    """
+    path = DATA_DIR / "ports.csv"
+    if not path.exists():
+        return [
+            {"name": "Arzew",       "lat": 35.734, "lon": -0.311, "type": "LNG/Export"},
+            {"name": "Skikda",      "lat": 36.876, "lon":  6.907, "type": "LNG/Export"},
+            {"name": "Algiers",     "lat": 36.774, "lon":  3.056, "type": "General"},
+            {"name": "Annaba",      "lat": 36.906, "lon":  7.750, "type": "General"},
+            {"name": "Bejaia",      "lat": 36.752, "lon":  5.090, "type": "General"},
+            {"name": "Mostaganem",  "lat": 35.931, "lon":  0.085, "type": "General"},
+            {"name": "Oran",        "lat": 35.718, "lon": -0.644, "type": "General"},
+        ]
+    df_p = pd.read_csv(path)
+    # WPI column names vary by version — handle both
+    lat_col = next((c for c in df_p.columns if "lat" in c.lower()), None)
+    lon_col = next((c for c in df_p.columns if "lon" in c.lower()), None)
+    name_col = next((c for c in df_p.columns if "name" in c.lower() or "port" in c.lower()), None)
+    if not (lat_col and lon_col and name_col):
+        return []
+    ports = []
+    for _, row in df_p.iterrows():
+        try:
+            ports.append({
+                "name": str(row[name_col]),
+                "lat":  float(row[lat_col]),
+                "lon":  float(row[lon_col]),
+                "type": str(row.get("Harbor Type", row.get("type", "Port"))),
+            })
+        except (ValueError, KeyError):
+            continue
+    return ports
+
+
+@st.cache_data
+def load_power_plants():
+    """
+    Load solar + wind plants from Global Energy Monitor CSV.
+    Falls back to the hardcoded ALL_STATIONS from tab4.
+    """
+    path = DATA_DIR / "power_plants.csv"
+    if not path.exists():
+        return ALL_STATIONS  # reuse tab4 fallback
+    df_pp = pd.read_csv(path)
+    plants = []
+    for _, row in df_pp.iterrows():
+        try:
+            lat = float(row.get("Latitude", row.get("lat", float("nan"))))
+            lon = float(row.get("Longitude", row.get("lon", float("nan"))))
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            fuel = str(row.get("Fuel", row.get("type", "Solar"))).lower()
+            ptype = "Wind" if "wind" in fuel else "Solar"
+            plants.append({
+                "name":   str(row.get("Project Name", row.get("name", "Plant"))),
+                "lat":    lat,
+                "lon":    lon,
+                "mw":     float(row.get("Capacity (MW)", row.get("mw", 0)) or 0),
+                "status": str(row.get("Status", "operating")),
+                "type":   ptype,
+            })
+        except (ValueError, KeyError):
+            continue
+    return plants
+
+
+# ── Tab rendering ─────────────────────────────────────────────────────────────
+
+with tab5:
+    st.markdown("## 🗺️ Algeria Energy Infrastructure")
+    st.markdown(
+        '<p style="color:#5a7a9a;font-size:13px;margin-top:-10px">'
+        "Real infrastructure data — HV power grid · Gas pipelines · Export ports · RE plants"
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Layer toggles (sidebar, only shown in this tab via session state trick) ──
+    st.sidebar.markdown('<div class="section-title">🗺️ Infrastructure Layers</div>', unsafe_allow_html=True)
+    show_hv_lines   = st.sidebar.checkbox("⚡ HV Power lines",    value=True,  key="inf_hv")
+    show_gas_pipes  = st.sidebar.checkbox("🔶 Gas pipelines",     value=True,  key="inf_gas")
+    show_ports_inf  = st.sidebar.checkbox("⚓ Export ports",      value=True,  key="inf_ports")
+    show_solar_inf  = st.sidebar.checkbox("☀️ Solar plants",      value=True,  key="inf_solar")
+    show_wind_inf   = st.sidebar.checkbox("💨 Wind farms",        value=True,  key="inf_wind")
+    show_lcoh_bg    = st.sidebar.checkbox("🌡️ LCOH background",   value=True,  key="inf_lcoh")
+
+    # ── Load all data ──────────────────────────────────────────────────────────
+    power_lines  = load_power_lines()
+    gas_pipes    = load_gas_pipelines()
+    ports        = load_ports()
+    plants       = load_power_plants()
+
+    solar_plants = [p for p in plants if p["type"] == "Solar"]
+    wind_plants  = [p for p in plants if p["type"] == "Wind"]
+
+    # ── Data source badges ─────────────────────────────────────────────────────
+    def _src_badge(label, is_real, fallback_note=""):
+        color = "#00d4b8" if is_real else "#f5a623"
+        icon  = "✅" if is_real else "⚠️"
+        note  = "" if is_real else f" ({fallback_note})"
+        return f'<span style="background:{color}22;border:1px solid {color};border-radius:4px;padding:2px 8px;font-size:11px;color:{color};font-family:monospace">{icon} {label}{note}</span>'
+
+    hv_real    = (DATA_DIR / "grid_lines.geojson").exists()
+    gas_real   = (DATA_DIR / "gas_pipelines.geojson").exists()
+    ports_real = (DATA_DIR / "ports.csv").exists()
+    plants_real= (DATA_DIR / "power_plants.csv").exists()
+
+    badge_html = " &nbsp; ".join([
+        _src_badge("HV Lines",    hv_real,    "estimated"),
+        _src_badge("Gas pipes",   gas_real,   "none loaded"),
+        _src_badge("Ports",       ports_real, "hardcoded"),
+        _src_badge("RE Plants",   plants_real,"hardcoded"),
+    ])
+    st.markdown(f'<div style="margin-bottom:16px">{badge_html}</div>', unsafe_allow_html=True)
+
+    if not (hv_real or gas_real or ports_real or plants_real):
+        st.markdown("""<div class='info-box'>
+        <b>To load real data, add these files to your <code>data/</code> folder:</b><br><br>
+        &bull; <code>grid_lines.geojson</code> — from <a href="https://overpass-turbo.eu" target="_blank">overpass-turbo.eu</a> (query: power=line, country=Algeria)<br>
+        &bull; <code>gas_pipelines.geojson</code> — from <a href="https://globalenergymonitor.org" target="_blank">globalenergymonitor.org</a> → Gas Infrastructure Tracker<br>
+        &bull; <code>ports.csv</code> — from <a href="https://msi.nga.mil/Publications/WPI" target="_blank">msi.nga.mil/Publications/WPI</a> (filter COUNTRY=AL)<br>
+        &bull; <code>power_plants.csv</code> — from <a href="https://globalenergymonitor.org" target="_blank">globalenergymonitor.org</a> → Solar + Wind Trackers<br><br>
+        The map below shows estimated/hardcoded data until then.
+        </div>""", unsafe_allow_html=True)
+
+    # ── KPI row ────────────────────────────────────────────────────────────────
+    i1, i2, i3, i4, i5 = st.columns(5)
+    i1.metric("HV Line segments", len(power_lines),
+              delta="real OSM" if hv_real else "estimated", delta_color="normal")
+    i2.metric("Gas pipelines",    len(gas_pipes),
+              delta="real GEM" if gas_real else "none", delta_color="off")
+    i3.metric("Export ports",     len(ports),
+              delta="real WPI" if ports_real else "hardcoded", delta_color="normal")
+    i4.metric("Solar plants",     len(solar_plants),
+              delta="real GEM" if plants_real else "hardcoded", delta_color="normal")
+    i5.metric("Wind farms",       len(wind_plants),
+              delta="real GEM" if plants_real else "hardcoded", delta_color="normal")
+    st.markdown("---")
+
+    # ── Build map ──────────────────────────────────────────────────────────────
+    fig_inf = go.Figure()
+
+    # Layer 0: LCOH choropleth background (optional)
+    if show_lcoh_bg and has_data:
+        df_bg = scaled_df[scaled_df["lcoh_scaled"].notna() & (scaled_df["lcoh_scaled"] < 50)].copy()
+        resolution_bg = detect_resolution(df_bg)
+        geo_bg = build_geojson(
+            tuple(df_bg["lat"].round(4)),
+            tuple(df_bg["lon"].round(4)),
+            tuple(df_bg["cell_id"]),
+            resolution_bg,
+        )
+        fig_inf.add_trace(go.Choroplethmapbox(
+            geojson=geo_bg,
+            locations=df_bg["cell_id"].tolist(),
+            z=df_bg["lcoh_scaled"].tolist(),
+            colorscale="RdYlGn_r",
+            zmin=df_bg["lcoh_scaled"].quantile(0.05),
+            zmax=df_bg["lcoh_scaled"].quantile(0.95),
+            marker=dict(opacity=0.18, line_width=0, line_color="rgba(0,0,0,0)"),
+            colorbar=dict(
+                title=dict(text="LCOH $/kg", font=dict(color="#c8d8f0", size=11)),
+                thickness=10, len=0.35, x=0.01,
+                tickfont=dict(color="#c8d8f0", size=9),
+                bgcolor="#0d1829", bordercolor="#1e3050", borderwidth=1,
+            ),
+            showscale=True,
+            name="LCOH background",
+        ))
+
+    # Layer 1: HV power lines
+    if show_hv_lines:
+        for seg in power_lines:
+            lons = [c[0] for c in seg["coords"]]
+            lats = [c[1] for c in seg["coords"]]
+            v    = seg.get("voltage", "")
+            col  = "#00d4b8" if "400" in str(v) else "#00a896"
+            fig_inf.add_trace(go.Scattermapbox(
+                lat=lats, lon=lons,
+                mode="lines",
+                line=dict(width=1.5, color=col),
+                hovertext=seg.get("name", f"HV line {v}"),
+                hoverinfo="text",
+                showlegend=False,
+            ))
+        # single legend entry
+        fig_inf.add_trace(go.Scattermapbox(
+            lat=[None], lon=[None], mode="lines",
+            line=dict(width=2, color="#00d4b8"),
+            name="⚡ HV Power lines",
+        ))
+
+    # Layer 2: Gas pipelines
+    if show_gas_pipes and gas_pipes:
+        for pipe in gas_pipes:
+            lons = [c[0] for c in pipe["coords"]]
+            lats = [c[1] for c in pipe["coords"]]
+            fig_inf.add_trace(go.Scattermapbox(
+                lat=lats, lon=lons,
+                mode="lines",
+                line=dict(width=2.5, color="#ff9f43"),
+                hovertext=pipe.get("name", "Gas pipeline"),
+                hoverinfo="text",
+                showlegend=False,
+            ))
+        fig_inf.add_trace(go.Scattermapbox(
+            lat=[None], lon=[None], mode="lines",
+            line=dict(width=2.5, color="#ff9f43"),
+            name="🔶 Gas pipelines",
+        ))
+
+    # Layer 3: Export ports
+    if show_ports_inf and ports:
+        lng_ports = [p for p in ports if "lng" in p.get("type","").lower() or "export" in p.get("type","").lower()]
+        gen_ports = [p for p in ports if p not in lng_ports]
+
+        if lng_ports:
+            fig_inf.add_trace(go.Scattermapbox(
+                lat=[p["lat"] for p in lng_ports],
+                lon=[p["lon"] for p in lng_ports],
+                mode="markers",
+                marker=dict(size=16, color="#ff4d6d", symbol="harbor"),
+                text=[
+                    f"<b>⚓ {p['name']}</b><br>Type: {p.get('type','LNG/Export')}"
+                    for p in lng_ports
+                ],
+                hoverinfo="text",
+                name="⚓ LNG / Export ports",
+            ))
+        if gen_ports:
+            fig_inf.add_trace(go.Scattermapbox(
+                lat=[p["lat"] for p in gen_ports],
+                lon=[p["lon"] for p in gen_ports],
+                mode="markers",
+                marker=dict(size=11, color="#ff8fab", symbol="harbor"),
+                text=[
+                    f"<b>⚓ {p['name']}</b><br>Type: {p.get('type','Port')}"
+                    for p in gen_ports
+                ],
+                hoverinfo="text",
+                name="⚓ General ports",
+            ))
+
+    # Layer 4: Solar plants (sized by MW)
+    if show_solar_inf and solar_plants:
+        mw_vals = [max(p["mw"], 1) for p in solar_plants]
+        mw_max  = max(mw_vals)
+        sizes   = [8 + 22 * (mw / mw_max) for mw in mw_vals]
+        fig_inf.add_trace(go.Scattermapbox(
+            lat=[p["lat"] for p in solar_plants],
+            lon=[p["lon"] for p in solar_plants],
+            mode="markers",
+            marker=dict(size=sizes, color="#ffe066", opacity=0.85),
+            text=[
+                f"<b>☀️ {p['name']}</b><br>"
+                f"Capacity: {p['mw']:.0f} MW<br>"
+                f"Status: {p.get('status','operating')}"
+                for p in solar_plants
+            ],
+            hoverinfo="text",
+            name="☀️ Solar plants",
+        ))
+
+    # Layer 5: Wind farms (sized by MW)
+    if show_wind_inf and wind_plants:
+        mw_vals = [max(p["mw"], 1) for p in wind_plants]
+        mw_max  = max(mw_vals)
+        sizes   = [8 + 22 * (mw / mw_max) for mw in mw_vals]
+        fig_inf.add_trace(go.Scattermapbox(
+            lat=[p["lat"] for p in wind_plants],
+            lon=[p["lon"] for p in wind_plants],
+            mode="markers",
+            marker=dict(size=sizes, color="#7ecfff", symbol="square", opacity=0.85),
+            text=[
+                f"<b>💨 {p['name']}</b><br>"
+                f"Capacity: {p['mw']:.0f} MW<br>"
+                f"Status: {p.get('status','operating')}"
+                for p in wind_plants
+            ],
+            hoverinfo="text",
+            name="💨 Wind farms",
+        ))
+
+    fig_inf.update_layout(
+        **PLOT_BG,
+        mapbox=dict(
+            style="carto-darkmatter",
+            center=dict(lat=28.5, lon=2.5),
+            zoom=4.2,
+        ),
+        height=700,
+        showlegend=True,
+        legend=dict(
+            bgcolor="#0d1829",
+            bordercolor="#1e3050",
+            borderwidth=1,
+            font=dict(color="#c8d8f0", size=11),
+            x=0.01, y=0.99,
+            itemsizing="constant",
+        ),
+        title=dict(
+            text="Algeria Energy Infrastructure — Real Data Overlay",
+            font=dict(color="#f5a623", size=14, family="Space Mono"),
+            x=0.01,
+        ),
+    )
+    st.plotly_chart(fig_inf, use_container_width=True)
+
+    # ── Summary tables ─────────────────────────────────────────────────────────
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### ⚓ Export Ports")
+        if ports:
+            df_ports = pd.DataFrame(ports)[["name", "lat", "lon", "type"]]
+            df_ports.columns = ["Port", "Lat", "Lon", "Type"]
+            st.dataframe(df_ports.round(3), use_container_width=True, hide_index=True)
+        else:
+            st.info("No port data loaded.")
+
+    with col_b:
+        st.markdown("#### ☀️💨 RE Plants by capacity")
+        if plants:
+            df_plants = pd.DataFrame(plants)
+            _pcols = [c for c in ["name", "lat", "lon", "mw", "type", "status"] if c in df_plants.columns]
+            df_plants = df_plants[_pcols]
+            _rename = {"name":"Plant","lat":"Lat","lon":"Lon","mw":"MW","type":"Type","status":"Status"}
+            df_plants.columns = [_rename.get(c, c) for c in df_plants.columns]
+            df_plants = df_plants.sort_values("MW", ascending=False)
+            st.dataframe(df_plants.round(2), use_container_width=True, hide_index=True)
+        else:
+            st.info("No plant data loaded.")
+
+    # ── Download buttons ───────────────────────────────────────────────────────
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        if ports:
+            st.download_button(
+                "📥 Download Ports CSV",
+                data=pd.DataFrame(ports).to_csv(index=False),
+                file_name="algeria_ports.csv", mime="text/csv",
+                use_container_width=True,
+            )
+    with dl2:
+        if plants:
+            st.download_button(
+                "📥 Download RE Plants CSV",
+                data=pd.DataFrame(plants).to_csv(index=False),
+                file_name="algeria_re_plants.csv", mime="text/csv",
+                use_container_width=True,
+            )
