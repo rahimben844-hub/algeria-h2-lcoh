@@ -150,7 +150,7 @@ def build_geojson(lats, lons, cell_ids, resolution: float) -> dict:
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-@st.cache_data
+@st.cache_data(ttl=3600)  # Cache expires every hour — automatically refreshes hourly
 def load_grid() -> pd.DataFrame:
     if not GRID_PATH.exists():
         return pd.DataFrame()
@@ -159,7 +159,7 @@ def load_grid() -> pd.DataFrame:
     return ensure_cell_id(df)
 
 
-@st.cache_data
+@st.cache_data(ttl=3600)  # Cache expires every hour — automatically refreshes hourly
 def load_stats() -> pd.DataFrame:
     if not STATS_PATH.exists():
         return pd.DataFrame()
